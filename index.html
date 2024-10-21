@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transcribe Speech Live</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Quicksand', sans-serif;
+            background-color: #f9f9f9;
+        }
+        #audiogram-container {
+            position: relative;
+            width: 100%;
+            height: 300px;
+            overflow: hidden;
+            background-color: #f0f0f0;
+        }
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+        #record-button {
+            position: absolute;
+            top: calc(100% - 40px);
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 3;
+            background: rgba(255, 255, 255, 0.8);
+            border: none;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0px 4px 8px rgba(0, 0, 0, 0.2);
+        }
+        #record-button svg {
+            width: 28px;
+            height: 28px;
+            color: #ff0000;
+        }
+        #configurations {
+            margin: 20px 10px;
+            padding: 10px;
+            font-size: 80%;
+            text-align: center;
+            line-height: 20px;;
+        }
+        #transcription {
+            margin: 20px 10px;
+            padding: 10px;
+            font-size: 18px;
+            color: #333;
+            text-align: center;
+        }
+        #interim-text {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #333;
+            font-size: 24px;
+            font-weight: bold;
+            z-index: 3;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 5px 10px;
+            border-radius: 8px;
+        }
+        #mic-info {
+            margin-top: 10px;
+            padding: 40px;
+            opacity: 0.8;
+            font-size:80%;
+            display: none;
+        }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;600&family=Roboto:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="audiogram-container">
+        <canvas id="audiogram"></canvas>
+        <div id="interim-text"></div>
+        <button id="record-button" onclick="toggleRecording()">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                <path id="record-icon" d="M12 2a3 3 0 00-3 3v8a3 3 0 006 0V5a3 3 0 00-3-3zm0 14a5 5 0 005-5V5a5 5 0 00-10 0v6a5 5 0 005 5zm6-5a1 1 0 011 1v1a7 7 0 01-14 0v-1a1 1 0 112 0v1a5 5 0 0010 0v-1a1 1 0 011-1z"/>
+            </svg>
+        </button>
+    </div>
+    <div id="configurations">
+        <select id="language">
+            <option value="en-US">English (US)</option>
+            <option value="en-GB">English (UK)</option>
+            <option value="hi-IN">Hindi (India)</option>
+            <option value="es-ES">Spanish (Spain)</option>
+            <option value="fr-FR">French (France)</option>
+            <option value="de-DE">German</option>
+        </select>
+        <select id="recordingMode">
+          <option value="continuous">Continuous Recording</option>
+          <option value="chunked">Chunked Continuous Recording</option>
+          <option value="single">Single Recording</option>
+      </select>
+      <br/><br/>
+        <label for="interimResults">Interim Results</label>
+        <input type="checkbox" id="interimResults" checked>
+        <!-- <label for="maxAlternatives">Max Alternatives:</label>
+        <input type="number" id="maxAlternatives" value="1" min="1" max="5"> -->
+    </div>
+    <div id="transcription"><span id="transcription-text"></span></div>
+    <div id="mic-info"></div>
+
+    <script>
+        let audioContext, analyser, microphone, javascriptNode;
+        let canvas, canvasCtx;
+        let recognition;
+        let finalTranscript = '';
+        let isRecognizing = false;
+        let isRecording = false;
+
+        // Function to toggle recording state
+        async function toggleRecording() {
+            if (isRecording) {
+                stopRecording();
+            } else {
+                await startRecording();
+            }
+        }
+
+        // Function to start audio recording and visualizing
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                initializeAudioContext(stream);
+                startSpeechRecognition();
+                updateRecordingUI(true);
+            } catch (error) {
+              stopRecording();
+              console.error('Error accessing the microphone:', error);
+            }
+        }
+
+        // Function to initialize audio context and start visualizing
+        function initializeAudioContext(stream) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256;
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            microphone = audioContext.createMediaStreamSource(stream);
+            microphone.connect(analyser);
+
+            canvas = document.getElementById('audiogram');
+            canvasCtx = canvas.getContext('2d');
+            canvas.width = window.innerWidth;
+            canvas.height = 300;
+
+            updateMicInfo(stream);
+            drawAudiogram(bufferLength, dataArray);
+        }
+
+        // Function to start speech recognition
+        function startSpeechRecognition() {
+            // Get user configurations
+            const language = document.getElementById('language').value;
+            const maxAlternatives = 1;
+            const interimResults = document.getElementById('interimResults').checked;
+            const recordingMode = document.getElementById('recordingMode').value;
+
+            if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                recognition = new SpeechRecognition();
+                recognition.lang = language;
+                recognition.continuous = (recordingMode !== 'single');
+                recognition.interimResults = interimResults;
+                recognition.maxAlternatives = maxAlternatives;
+
+                recognition.onresult = handleSpeechResult;
+                recognition.onerror = handleSpeechError;
+                recognition.onend = handleSpeechEnd;
+
+                isRecognizing = true;
+                recognition.start();
+            } else {
+                console.error('Speech recognition not supported in this browser.');
+            }
+        }
+
+        // Function to handle speech recognition results
+        function handleSpeechResult(event) {
+            let interimTranscript = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                if (event.results[i].isFinal) {
+                    finalTranscript += event.results[i][0].transcript + ' ';
+                } else {
+                    interimTranscript += event.results[i][0].transcript;
+                }
+            }
+            document.getElementById('transcription-text').innerText = finalTranscript;
+            document.getElementById('interim-text').innerText = interimTranscript;
+        }
+
+        // Function to handle speech recognition errors
+        function handleSpeechError(event) {
+            console.error('Speech recognition error:', event.error);
+        }
+
+        // Function to handle speech recognition end event
+        function handleSpeechEnd() {
+            const recordingMode = document.getElementById('recordingMode').value;
+            if (isRecognizing && recordingMode === 'chunked') {
+                recognition.start(); // Restart recognition to handle chunked recording
+            } else if (recordingMode === 'continuous') {
+                recognition.start(); // Restart for continuous recording
+            }
+        }
+
+        // Function to stop recording and reset UI
+        function stopRecording() {
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+                canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+                document.getElementById('mic-info').innerText = '';
+            }
+
+            if (recognition) {
+                isRecognizing = false;
+                recognition.stop();
+                recognition.onend = null; // Prevent auto-restart on stop
+            }
+
+            updateRecordingUI(false);
+        }
+
+        // Function to draw the audiogram visualization
+        function drawAudiogram(bufferLength, dataArray) {
+            const draw = () => {
+                if (!audioContext) return;
+                requestAnimationFrame(draw);
+                analyser.getByteTimeDomainData(dataArray);
+                canvasCtx.fillStyle = '#f0f0f0';
+                canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+                canvasCtx.lineWidth = 2;
+                canvasCtx.strokeStyle = '#007bff';
+                canvasCtx.beginPath();
+
+                let sliceWidth = canvas.width * 1.0 / bufferLength;
+                let x = 0;
+                for (let i = 0; i < bufferLength; i++) {
+                    const v = dataArray[i] / 128.0;
+                    const y = v * canvas.height / 2;
+
+                    if (i === 0) {
+                        canvasCtx.moveTo(x, y);
+                    } else {
+                        canvasCtx.lineTo(x, y);
+                    }
+                    x += sliceWidth;
+                }
+                canvasCtx.lineTo(canvas.width, canvas.height / 2);
+                canvasCtx.stroke();
+            };
+            draw();
+        }
+
+        // Function to update microphone information
+        function updateMicInfo(stream) {
+            const micInfoDiv = document.getElementById('mic-info');
+            if (stream && stream.getAudioTracks().length > 0) {
+                const track = stream.getAudioTracks()[0];
+                const settings = track.getSettings();
+                const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+                const info = {
+                    label: settings.label || 'Unknown',
+                    deviceId: settings.deviceId || 'Unavailable',
+                    groupId: settings.groupId || 'Unavailable',
+                    sampleRate: audioContext.sampleRate || 'Unavailable',
+                    channelCount: settings.channelCount || 1,
+                    volume: settings.volume || 'Unavailable',
+                    latency: settings.latency || 'Unavailable',
+                    autoGainControl: settings.autoGainControl || 'Unavailable',
+                    echoCancellation: settings.echoCancellation || 'Unavailable',
+                    noiseSuppression: settings.noiseSuppression || 'Unavailable',
+                    capabilities: capabilities
+                };
+                micInfoDiv.innerText = `Microphone Info: 
+                  Label: ${info.label},
+                  Device ID: ${info.deviceId},
+                  Group ID: ${info.groupId},
+                  Sample Rate: ${info.sampleRate}Hz,
+                  Channel Count: ${info.channelCount},
+                  Volume: ${info.volume},
+                  Latency: ${info.latency},
+                  Auto Gain Control: ${info.autoGainControl},
+                  Echo Cancellation: ${info.echoCancellation},
+                  Noise Suppression: ${info.noiseSuppression}`;
+                console.debug('Complete Microphone Info:', info);
+            }
+        }
+
+        // Function to update recording UI
+        function updateRecordingUI(newRecordingState) {
+            isRecording = newRecordingState;
+            const recordIcon = document.getElementById('record-icon');
+            if (newRecordingState) {
+                recordIcon.setAttribute('d', 'M18 12c0 3.31-2.69 6-6 6s-6-2.69-6-6 2.69-6 6-6 6 2.69 6 6z');
+            } else {
+                recordIcon.setAttribute('d', 'M12 2a3 3 0 00-3 3v8a3 3 0 006 0V5a3 3 0 00-3-3zm0 14a5 5 0 005-5V5a5 5 0 00-10 0v6a5 5 0 005 5zm6-5a1 1 0 011 1v1a7 7 0 01-14 0v-1a1 1 0 112 0v1a5 5 0 0010 0v-1a1 1 0 011-1z');
+            }
+        }
+    </script>
+</body>
+</html>

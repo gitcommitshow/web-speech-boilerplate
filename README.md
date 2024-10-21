@@ -1,6 +1,7 @@
 # web-speech-boilerplate
-
 Transcribe speech in browser
+
+![Demo screenshot](./demo.png)
 
 A demo of browser's [SpeechRecognition API capabilities](https://developer.mozilla.org/en-US/docs/Web/API/SpeechRecognition).
 As it uses the browser native SpeechRecognition APIs, no additional installation required, no API integration with STT models required. Works offline in selected browsers/systems.
